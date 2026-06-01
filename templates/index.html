@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PATHOSIM — Global Epidemic Intelligence System</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="/static/css/main.css">
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js"></script>
 </head>
 <body>
@@ -55,20 +56,43 @@
 
   <!-- Map -->
   <div id="map-wrap">
-    <svg id="world-svg"></svg>
-    <canvas id="dot-canvas"></canvas>
+    <!-- Leaflet initialises here — no SVG/canvas needed in HTML -->
     <div id="tooltip"></div>
     <button id="reconfigure-btn">[ RECONFIGURE ]</button>
+
     <div id="idle-hint">
-      <div class="hint-text">CLICK COUNTRY TO SELECT OUTBREAK ORIGIN</div>
+      <div class="hint-text">CLICK ANY COUNTRY TO SELECT OUTBREAK ORIGIN</div>
     </div>
-    <div id="map-coords"></div>
+
+    <!-- Map view controls -->
+    <div id="map-controls">
+      <div class="mc-label">BASE MAP</div>
+      <button class="mc-btn active" data-layer="dark">DARK</button>
+      <button class="mc-btn" data-layer="satellite">SATELLITE</button>
+      <button class="mc-btn" data-layer="terrain">TERRAIN</button>
+      <div class="mc-divider"></div>
+      <div class="mc-label">OVERLAY</div>
+      <button class="mc-btn" id="density-toggle" data-active="false">DENSITY</button>
+    </div>
+
+    <!-- Legend -->
     <div id="legend">
-      <div class="legend-row"><div class="legend-swatch" style="background:#0f1e38"></div>Unaffected</div>
-      <div class="legend-row"><div class="legend-swatch" style="background:#5c2800"></div>Early spread</div>
-      <div class="legend-row"><div class="legend-swatch" style="background:#a04000"></div>Widespread</div>
-      <div class="legend-row"><div class="legend-swatch" style="background:#cc2000"></div>Overwhelmed</div>
-      <div class="legend-row"><div class="legend-swatch" style="background:rgba(255,60,40,0.85); border-radius:50%"></div>100 deaths</div>
+      <div class="legend-title" id="legend-title">INFECTION STATUS</div>
+      <div id="infection-legend">
+        <div class="legend-row"><div class="legend-swatch" style="background:#0f1e38"></div>Unaffected</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#5c2800"></div>Early spread</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#a04000"></div>Widespread</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#cc2000"></div>Overwhelmed</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:rgba(255,60,40,0.85); border-radius:50%"></div>100 deaths</div>
+      </div>
+      <div id="density-legend" style="display:none">
+        <div class="legend-row"><div class="legend-swatch" style="background:#0a1830"></div>&lt; 10 / km²</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#1a4466"></div>10 – 50</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#445500"></div>50 – 100</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#886600"></div>100 – 200</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#b35000"></div>200 – 500</div>
+        <div class="legend-row"><div class="legend-swatch" style="background:#8b0000"></div>&gt; 500 / km²</div>
+      </div>
     </div>
   </div>
 
@@ -82,10 +106,8 @@
     <div id="news-list">
       <div class="news-placeholder">
         SYSTEM READY<br>
-        AWAITING SIMULATION PARAMETERS<br>
-        <br>
-        FEEDS WILL POPULATE<br>
-        AS OUTBREAK EVOLVES
+        AWAITING SIMULATION PARAMETERS<br><br>
+        FEEDS WILL POPULATE<br>AS OUTBREAK EVOLVES
       </div>
     </div>
     <div id="analytics-panel">
@@ -166,7 +188,7 @@
               <span class="param-val" id="r0-val">2.5</span>
             </div>
             <input type="range" id="r0" min="0.5" max="6.0" step="0.1" value="2.5">
-            <div class="param-range">Range: 0.5 (low) → 6.0 (extreme)</div>
+            <div class="param-range">0.5 (low) → 6.0 (extreme)</div>
           </div>
           <div class="param-item">
             <div class="param-label">
@@ -207,7 +229,7 @@
       <div class="param-section">
         <div class="param-section-title">Intelligence Feed — Anthropic API Key (optional)</div>
         <input type="text" id="api-key" placeholder="sk-ant-api... (or set ANTHROPIC_API_KEY in .env)" autocomplete="off" spellcheck="false">
-        <div class="api-warning">⚠ Key sent to local Flask server only — never leaves your machine. Set ANTHROPIC_API_KEY in .env to avoid entering it here.</div>
+        <div class="api-warning">⚠ Key is sent to the local Flask server only — it never leaves your machine. Set ANTHROPIC_API_KEY in .env to avoid entering it here each time.</div>
       </div>
 
       <button id="start-btn">INITIALIZE SIMULATION</button>
@@ -215,7 +237,7 @@
   </div>
 </div>
 
-<!-- JS — load order matters: data → simulation → renderer → news → app -->
+<!-- JS load order: data → simulation → renderer → news → app -->
 <script src="/static/js/data.js"></script>
 <script src="/static/js/simulation.js"></script>
 <script src="/static/js/renderer.js"></script>
