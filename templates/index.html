@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PATHOSIM — Global Epidemic Intelligence System</title>
+<link rel="stylesheet" href="/static/css/main.css">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js"></script>
+</head>
+<body>
+
+<!-- ── Top header ── -->
+<div id="top-header">
+  <div class="brand-block">
+    <div class="brand-title">PATHOSIM</div>
+    <div class="brand-sub">Global Epidemic Intelligence System</div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-cell">
+      <div class="stat-lbl">Infected (Cumul.)</div>
+      <div class="stat-val v-cases" id="stat-cases">——</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-lbl">Active Infections</div>
+      <div class="stat-val v-active" id="stat-active">——</div>
+    </div>
+    <div class="stat-cell alert">
+      <div class="stat-lbl">Confirmed Deaths</div>
+      <div class="stat-val v-deaths" id="stat-deaths">——</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-lbl">Nations Affected</div>
+      <div class="stat-val v-nations" id="stat-countries">——</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-lbl">Case Fatality Rate</div>
+      <div class="stat-val v-cfr" id="stat-cfr">——</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-lbl">Effective R</div>
+      <div class="stat-val v-r0" id="stat-re">——</div>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div id="day-display"><span class="status-dot" id="status-dot"></span>AWAITING INPUT</div>
+    <div id="model-label">SEIR · 80 NATIONS · v2.4.1</div>
+  </div>
+</div>
+
+<!-- ── Main layout ── -->
+<div id="main">
+
+  <!-- Map -->
+  <div id="map-wrap">
+    <svg id="world-svg"></svg>
+    <canvas id="dot-canvas"></canvas>
+    <div id="tooltip"></div>
+    <button id="reconfigure-btn">[ RECONFIGURE ]</button>
+    <div id="idle-hint">
+      <div class="hint-text">CLICK COUNTRY TO SELECT OUTBREAK ORIGIN</div>
+    </div>
+    <div id="map-coords"></div>
+    <div id="legend">
+      <div class="legend-row"><div class="legend-swatch" style="background:#0f1e38"></div>Unaffected</div>
+      <div class="legend-row"><div class="legend-swatch" style="background:#5c2800"></div>Early spread</div>
+      <div class="legend-row"><div class="legend-swatch" style="background:#a04000"></div>Widespread</div>
+      <div class="legend-row"><div class="legend-swatch" style="background:#cc2000"></div>Overwhelmed</div>
+      <div class="legend-row"><div class="legend-swatch" style="background:rgba(255,60,40,0.85); border-radius:50%"></div>100 deaths</div>
+    </div>
+  </div>
+
+  <!-- News sidebar -->
+  <div id="news-sidebar">
+    <div id="news-header">
+      <span class="status-dot" id="news-dot"></span>
+      <span class="nh-title">Intelligence Feed</span>
+      <span class="nh-count" id="news-count">0 REPORTS</span>
+    </div>
+    <div id="news-list">
+      <div class="news-placeholder">
+        SYSTEM READY<br>
+        AWAITING SIMULATION PARAMETERS<br>
+        <br>
+        FEEDS WILL POPULATE<br>
+        AS OUTBREAK EVOLVES
+      </div>
+    </div>
+    <div id="analytics-panel">
+      <div class="analytics-title">Simulation Parameters</div>
+      <div class="analytics-row">
+        <span class="analytics-key">R₀</span>
+        <span class="analytics-val" id="ap-r0">—</span>
+      </div>
+      <div class="analytics-row">
+        <span class="analytics-key">INCUBATION</span>
+        <span class="analytics-val" id="ap-incub">—</span>
+      </div>
+      <div class="analytics-row">
+        <span class="analytics-key">MORTALITY</span>
+        <span class="analytics-val" id="ap-mort">—</span>
+      </div>
+      <div class="analytics-row">
+        <span class="analytics-key">VACCINE</span>
+        <span class="analytics-val" id="ap-vacc">—</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Timeline ── -->
+<div id="timeline-bar">
+  <button id="play-btn">▶</button>
+  <div class="timeline-track">
+    <div class="timeline-ticks">
+      <span class="timeline-tick">DAY 0</span>
+      <span class="timeline-tick">6 MO</span>
+      <span class="timeline-tick">1 YR</span>
+      <span class="timeline-tick">18 MO</span>
+      <span class="timeline-tick">2 YR</span>
+    </div>
+    <input type="range" id="scrubber" min="0" max="729" value="0" step="1">
+  </div>
+  <div class="timeline-info">
+    <div id="timeline-date">——</div>
+    <div id="timeline-day">SELECT ORIGIN TO BEGIN</div>
+  </div>
+  <div id="model-footer">
+    <span>SEIR MODEL · 80 COUNTRIES</span>
+    <span>730-DAY PROJECTION</span>
+  </div>
+</div>
+
+<!-- ── Computing overlay ── -->
+<div id="computing-overlay">
+  <div class="computing-title">Computing Outbreak Simulation</div>
+  <div class="computing-bar-wrap"><div class="computing-bar"></div></div>
+  <div class="computing-sub">PRE-CALCULATING 730-DAY SNAPSHOT ARRAY · PLEASE WAIT</div>
+</div>
+
+<!-- ── Config overlay ── -->
+<div id="config-overlay">
+  <div id="config-panel">
+    <div class="config-top-bar">
+      <div>
+        <h2>Outbreak Configuration</h2>
+        <p>// PATHOSIM GLOBAL EPIDEMIC INTELLIGENCE SYSTEM</p>
+      </div>
+    </div>
+    <div class="config-body">
+
+      <div class="param-section">
+        <div class="param-section-title">Origin Parameters</div>
+        <div id="origin-display">NO COUNTRY SELECTED — CLICK MAP OR CHOOSE BELOW</div>
+        <select id="origin-select"></select>
+      </div>
+
+      <div class="param-section">
+        <div class="param-section-title">Pathogen Parameters</div>
+        <div class="param-grid">
+          <div class="param-item">
+            <div class="param-label">
+              <span class="param-name">R₀ — Basic Reproduction No.</span>
+              <span class="param-val" id="r0-val">2.5</span>
+            </div>
+            <input type="range" id="r0" min="0.5" max="6.0" step="0.1" value="2.5">
+            <div class="param-range">Range: 0.5 (low) → 6.0 (extreme)</div>
+          </div>
+          <div class="param-item">
+            <div class="param-label">
+              <span class="param-name">Incubation Period</span>
+              <span class="param-val" id="incub-val">5</span>
+            </div>
+            <input type="range" id="incub" min="1" max="21" step="1" value="5">
+            <div class="param-range">Days: 1 (rapid) → 21 (slow)</div>
+          </div>
+          <div class="param-item">
+            <div class="param-label">
+              <span class="param-name">Case Fatality Rate</span>
+              <span class="param-val" id="mort-val">1.0</span>
+            </div>
+            <input type="range" id="mort" min="0.1" max="10" step="0.1" value="1.0">
+            <div class="param-range">Percentage: 0.1% → 10.0%</div>
+          </div>
+          <div class="param-item">
+            <div class="param-label">
+              <span class="param-name">Vaccine Timeline</span>
+              <span class="param-val" id="vacc-val">18</span>
+            </div>
+            <input type="range" id="vacc" min="6" max="36" step="1" value="18">
+            <div class="param-range">Months until available: 6 → 36</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="param-section">
+        <div class="param-section-title">Simulation Speed</div>
+        <div class="speed-group">
+          <button class="speed-btn" data-speed="slow">SLOW</button>
+          <button class="speed-btn active" data-speed="normal">NORMAL</button>
+          <button class="speed-btn" data-speed="fast">FAST</button>
+        </div>
+      </div>
+
+      <div class="param-section">
+        <div class="param-section-title">Intelligence Feed — Anthropic API Key (optional)</div>
+        <input type="text" id="api-key" placeholder="sk-ant-api... (or set ANTHROPIC_API_KEY in .env)" autocomplete="off" spellcheck="false">
+        <div class="api-warning">⚠ Key sent to local Flask server only — never leaves your machine. Set ANTHROPIC_API_KEY in .env to avoid entering it here.</div>
+      </div>
+
+      <button id="start-btn">INITIALIZE SIMULATION</button>
+    </div>
+  </div>
+</div>
+
+<!-- JS — load order matters: data → simulation → renderer → news → app -->
+<script src="/static/js/data.js"></script>
+<script src="/static/js/simulation.js"></script>
+<script src="/static/js/renderer.js"></script>
+<script src="/static/js/news.js"></script>
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>
