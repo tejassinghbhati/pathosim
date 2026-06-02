@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PATHOSIM — Simulation Report</title>
+<link rel="stylesheet" href="/static/css/analytics.css">
+</head>
+<body>
+
+<!-- ── Header ───────────────────────────────────────── -->
+<header id="ah">
+  <div class="ah-left">
+    <a href="/simulate" class="ah-back">←</a>
+    <span class="ah-brand">PATHOSIM</span>
+    <span class="ah-sep">·</span>
+    <span class="ah-title">Simulation Report</span>
+  </div>
+  <div id="ah-params" class="ah-params"></div>
+  <div class="ah-right">
+    <a href="/simulate" class="ah-run-btn">↩ Back to Simulation</a>
+  </div>
+</header>
+
+<!-- ── No-data state ─────────────────────────────────── -->
+<div id="no-data" style="display:none">
+  <div class="nd-box">
+    <div class="nd-icon">⊘</div>
+    <div class="nd-title">No Simulation Data</div>
+    <div class="nd-desc">Run a simulation first, then open this page via the Analytics button.</div>
+    <a href="/simulate" class="nd-btn">Go to Simulator →</a>
+  </div>
+</div>
+
+<!-- ── Hero ──────────────────────────────────────────── -->
+<div id="analytics-hero" style="display:none">
+  <div class="hero-numbers" id="hero-numbers"></div>
+  <div class="hero-meta"    id="hero-meta"></div>
+</div>
+
+<!-- ── Analytics content ─────────────────────────────── -->
+<main id="analytics-main" style="display:none">
+
+  <!-- Epidemic curve (full-width) -->
+  <section class="section">
+    <div class="section-label">Epidemic Curve — SEIR Dynamics</div>
+    <div class="chart-card">
+      <div class="chart-title">
+        Active Infections, Cumulative Cases &amp; Deaths — 730-day projection
+        <span class="chart-sub">Logarithmic scale · Vertical markers: peak, vaccine, end</span>
+      </div>
+      <div class="chart-wrap x-tall"><canvas id="chart-epidemic"></canvas></div>
+    </div>
+  </section>
+
+  <!-- R-eff + Spread row -->
+  <section class="section grid2">
+    <div class="chart-card">
+      <div class="chart-title">
+        Effective Reproduction Number (R<sub>eff</sub>)
+        <span class="chart-sub">7-day rolling average · R=1 threshold line</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-re"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">
+        Geographic Spread
+        <span class="chart-sub">Countries with active transmission over time</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-spread"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Deaths + Tiers row -->
+  <section class="section grid2">
+    <div class="chart-card">
+      <div class="chart-title">
+        Daily Deaths
+        <span class="chart-sub">Raw bars + 7-day average</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-deaths"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">
+        Healthcare Tier Impact
+        <span class="chart-sub">Deaths per 100k &amp; avg CFR by infrastructure tier</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-tiers"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ML section (shown only when ML was active) -->
+  <section class="section" id="ml-section" style="display:none">
+    <div class="section-label">Machine Learning Model — Feature Analysis</div>
+
+    <div class="grid2" style="margin-bottom:14px">
+      <div class="chart-card">
+        <div class="chart-title">
+          Transmission Rate (β) — Feature Importance
+          <span class="chart-sub">Which input features drive how fast the disease spreads</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-fi-beta"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">
+          Case Fatality Rate (CFR) — Feature Importance
+          <span class="chart-sub">Which input features determine mortality outcomes</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-fi-cfr"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="chart-card">
+        <div class="chart-title">
+          Hospital Beds/1k vs Deaths per 100k
+          <span class="chart-sub">Each point = one city · colour = healthcare tier</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-beds-deaths"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">
+          Population Density vs Deaths per 100k
+          <span class="chart-sub">Denser cities have faster transmission and higher burden</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-density-deaths"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Cities table -->
+  <section class="section">
+    <div class="section-label">Most Affected Cities — Final State (Day 730)</div>
+    <div class="table-controls">
+      <span class="tc-label">Sort by:</span>
+      <button class="tc-btn active" data-sort="deaths">Total Deaths</button>
+      <button class="tc-btn" data-sort="deathsper100k">Deaths/100k</button>
+      <button class="tc-btn" data-sort="cases">Total Cases</button>
+      <button class="tc-btn" data-sort="peakactive">Peak Active</button>
+      <button class="tc-btn" data-sort="cfr">CFR %</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>City</th>
+            <th>ISO</th>
+            <th>Healthcare</th>
+            <th>ML β</th>
+            <th>ML CFR</th>
+            <th>Deaths</th>
+            <th>Deaths/100k</th>
+            <th>Cases</th>
+            <th>Peak Active</th>
+            <th>CFR %</th>
+            <th>Pop (M)</th>
+          </tr>
+        </thead>
+        <tbody id="cities-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Milestone timeline -->
+  <section class="section">
+    <div class="section-label">Simulation Milestones — Chronological</div>
+    <div class="milestone-list" id="milestone-timeline"></div>
+  </section>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="/static/js/analytics.js"></script>
+</body>
+</html>
