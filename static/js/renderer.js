@@ -1,227 +1,248 @@
+'use strict';
+
 // ═══════════════════════════════════════════════════════
-//  renderer.js — Leaflet map, canvas dot overlay, population density
-//  Depends on: data.js (COUNTRIES, ISO_NUM_TO_INFO, COUNTRY_BY_ISO)
+//  renderer.js  —  Leaflet map + canvas epidemic viz
+//  Depends on:  data.js, cities.js, simulation.js
+//  Exposes to app.js:  onMapClick(), placeOriginMarker(),
+//                      setTileLayer(), toggleHeatmap(), toggleDensity()
 // ═══════════════════════════════════════════════════════
 
-let map, geoLayer, dotCanvas, dotCtx;
+let map          = null;
+let geoLayer     = null;
+let dotCanvas    = null;
+let dotCtx       = null;
+let heatLayer    = null;
+let originMarker = null;
+let originRing   = null;
+
 let currentSnapshot = null;
-let showDensity = false;
+let showDensity     = false;
+let showHeatmap     = false;
+let animFrame       = 0;        // incremented each rAF tick for per-city phase offset
 
-// Layer tile definitions
+// ── Tile layers ───────────────────────────────────────
 const TILE_LAYERS = {
   dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attr: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+    url:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    attr: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/copyright">OSM</a>',
   },
   satellite: {
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    url:  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attr: 'Tiles © Esri — Source: Esri, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN',
   },
   terrain: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attr: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+    url:  'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    attr: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/copyright">OSM</a>',
   },
 };
 let activeTileLayer = null;
 
-// Country GeoJSON layer references: iso2 → Leaflet layer
+// Country GeoJSON helpers
 const countryLayers = {};
+// fillOpacity:0 = truly invisible (no hairline artifact at polar latitudes)
+// className:'country-layer' + CSS pointer-events:all = stays hoverable despite 0 opacity
+const BASE_STYLE    = { fillColor:'#ffffff', fillOpacity:0, color:'transparent', weight:0, interactive:true, className:'country-layer' };
+const HOVER_STYLE   = { fillColor:'#ffffff', fillOpacity:0.10, color:'rgba(255,255,255,0.3)', weight:0.8, className:'country-layer' };
 
-// Infection stage fill colours
-const STAGE_STYLE = {
-  unaffected:  { fillColor:'#0f1e38', fillOpacity:0.82, color:'#0a1428', weight:0.6 },
-  early:       { fillColor:'#5c2800', fillOpacity:0.88, color:'#0a1428', weight:0.6 },
-  widespread:  { fillColor:'#a04000', fillOpacity:0.92, color:'#0a1428', weight:0.6 },
-  overwhelmed: { fillColor:'#cc2000', fillOpacity:0.95, color:'#0a1428', weight:0.6 },
-  origin:      { fillColor:'#8b0000', fillOpacity:1.0,  color:'#ff3b30', weight:1.8 },
-};
+// ── Epidemic phase ────────────────────────────────────
+function getEpidemicPhase(cd, prevCd) {
+  if (!cd || cd.active < 10) return 'unaffected';
 
-function densityStyle(density) {
-  let fill;
-  if      (!density || density < 10)  fill = '#0a1830';
-  else if (density < 50)              fill = '#1a4466';
-  else if (density < 100)             fill = '#445500';
-  else if (density < 200)             fill = '#886600';
-  else if (density < 500)             fill = '#b35000';
-  else                                fill = '#8b0000';
-  return { fillColor: fill, fillOpacity: 0.82, color: '#0a1428', weight: 0.6 };
+  const N          = Math.max(1, cd.N);
+  const activeFrac = cd.active / N;
+  const prevActive = prevCd ? prevCd.active : 0;
+  const growth     = prevActive > 0 ? cd.active / prevActive : 1;
+
+  if (activeFrac > 0.05)                       return 'overwhelmed';
+  if (activeFrac > 0.02)                       return 'peak';
+  if (growth > 1.05 && activeFrac > 0.001)     return 'growing';
+  if (growth > 1.02)                           return 'early';
+  if (growth < 0.95 && activeFrac > 0.0005)   return 'declining';
+  return 'endemic';
 }
 
-function infectionStage(snap, iso) {
-  if (!snap) return 'unaffected';
-  const c = snap.countries[iso];
-  if (!c) return 'unaffected';
-  const frac = (c.I + c.E) / c.N;
-  if (frac > 0.05 || c.D > 50000)  return 'overwhelmed';
-  if (frac > 0.01 || c.D > 5000)   return 'widespread';
-  if (frac > 0.001 || c.D > 100)   return 'early';
-  return 'unaffected';
+function getPhaseColor(phase) {
+  switch (phase) {
+    case 'early':       return [255, 210, 50 ];  // amber
+    case 'growing':     return [255, 130, 40 ];  // orange
+    case 'peak':        return [230, 50,  35 ];  // red
+    case 'overwhelmed': return [180, 20,  20 ];  // dark red
+    case 'declining':   return [180, 100, 60 ];  // rust
+    case 'endemic':     return [130, 130, 90 ];  // tan
+    default:            return [80,  80,  80 ];
+  }
+}
+
+// R_eff heuristic — used only for pulse gating
+function growsToday(cd, prevCd) {
+  if (!cd || !prevCd) return false;
+  const incub  = (window._simParams && window._simParams.incubDays) || 5;
+  const period = Math.max(4, incub + 5);
+  const ratio  = cd.active / Math.max(1, prevCd.active);
+  return Math.pow(ratio, period) > 1.15;  // R_eff > 1.15 triggers pulse
 }
 
 // ── Map initialisation ────────────────────────────────
 async function initMap() {
-  map = L.map('map-wrap', {
-    center: [20, 10],
-    zoom: 2,
-    minZoom: 2,
-    maxZoom: 10,
-    zoomControl: true,
-    attributionControl: true,
-  });
+  if (!document.getElementById('map-wrap')) {
+    console.error('No #map-wrap element found'); return;
+  }
 
-  // Reposition zoom control so it doesn't clash with our UI
+  map = L.map('map-wrap', {
+    center: [20, 10], zoom: 2, minZoom: 2, maxZoom: 14,
+    zoomControl: true, attributionControl: true,
+  });
   map.zoomControl.setPosition('bottomright');
 
-  // Default tile layer
-  setTileLayer('dark');
+  setTileLayer('satellite');
 
-  // Load TopoJSON and build GeoJSON country layer
+  // Heatmap (non-critical)
+  try {
+    if (typeof L.heatLayer === 'function') buildHeatmap();
+    else {
+      const b = document.getElementById('heatmap-toggle');
+      if (b) { b.disabled = true; b.title = 'Heatmap plugin unavailable'; }
+    }
+  } catch (e) { console.warn('Heatmap init failed:', e); }
+
+  // Map click → nearest city
+  map.on('click', e => {
+    try {
+      const { lat, lng } = e.latlng;
+      const r = findNearestCity(lat, lng);
+      if (typeof onMapClick === 'function') onMapClick(r.city, r.idx, r.distKm, lat, lng);
+    } catch (err) { console.error('Map click error:', err); }
+  });
+
+  // World boundaries (hover/tooltip only — fills transparent)
   try {
     const world   = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json').then(r => r.json());
     const geojson = topojson.feature(world, world.objects.countries);
-
     geoLayer = L.geoJSON(geojson, {
-      style:          featureStyle,
-      onEachFeature:  onEachFeature,
+      style:         () => BASE_STYLE,
+      onEachFeature: wireCountryEvents,
+      smoothFactor:  1.5,
     }).addTo(map);
-
   } catch (e) {
-    console.error('Failed to load world map:', e);
+    console.error('TopoJSON load failed:', e);
+    showMapError('Failed to load country boundaries.');
   }
 
-  // Create the death-dot canvas overlay
   createDotCanvas();
 
-  // Redraw dots whenever map moves or zooms
-  map.on('move zoom moveend zoomend', () => {
-    if (currentSnapshot) drawDots(currentSnapshot, currentSnapshot.day);
-  });
+  map.on('move zoom moveend zoomend', () => { if (currentSnapshot) drawCircles(currentSnapshot); });
+  map.on('resize', () => { syncCanvas(); if (currentSnapshot) drawCircles(currentSnapshot); });
 
-  // Resize canvas when map container resizes
-  map.on('resize', () => {
-    syncCanvas();
-    if (currentSnapshot) drawDots(currentSnapshot, currentSnapshot.day);
-  });
+  // Continuous animation loop (pulse effect) — runs at rAF rate
+  (function loop() {
+    animFrame++;
+    if (currentSnapshot) drawCircles(currentSnapshot);
+    requestAnimationFrame(loop);
+  })();
 }
 
-// ── Tile layer switching ──────────────────────────────
+// ── Tile switching ────────────────────────────────────
 function setTileLayer(key) {
-  if (activeTileLayer) map.removeLayer(activeTileLayer);
-  const def = TILE_LAYERS[key];
-  activeTileLayer = L.tileLayer(def.url, {
-    attribution: def.attr,
-    subdomains: 'abcd',
-    maxZoom: 19,
-  }).addTo(map);
+  if (activeTileLayer) try { map.removeLayer(activeTileLayer); } catch (_) {}
+  const def = TILE_LAYERS[key] || TILE_LAYERS.satellite;
+  activeTileLayer = L.tileLayer(def.url, { attribution: def.attr, subdomains:'abcd', maxZoom:19 }).addTo(map);
+  if (heatLayer && showHeatmap) heatLayer.addTo(map);
+  document.querySelectorAll('.mlc-btn[data-layer]').forEach(b => b.classList.toggle('active', b.dataset.layer === key));
+}
 
-  // Update control button states
-  document.querySelectorAll('.mc-btn[data-layer]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.layer === key);
+// ── Population heatmap ────────────────────────────────
+function buildHeatmap() {
+  const data = CITIES.map(c => [c.lat, c.lng, Math.min(1, Math.log10(c.pop * 1e6 + 1) / 8)]);
+  if (heatLayer) try { map.removeLayer(heatLayer); } catch (_) {}
+  heatLayer = L.heatLayer(data, {
+    radius:30, blur:24, maxZoom:6, max:1.0,
+    gradient:{ 0.1:'#050d20', 0.35:'#062a55', 0.6:'#0a4a80', 0.8:'#0d6aaa', 0.95:'#00aadd', 1:'#00d4ff' },
   });
+  if (showHeatmap) heatLayer.addTo(map);
 }
 
-// ── Feature style ─────────────────────────────────────
-function featureStyle(feature) {
-  const info = ISO_NUM_TO_INFO[feature.id] || {};
-  const iso  = info.iso || '';
-
-  if (showDensity) {
-    const country = COUNTRY_BY_ISO[iso];
-    return densityStyle(country ? country.density : undefined);
-  }
-
-  if (!currentSnapshot || !iso) return STAGE_STYLE.unaffected;
-
-  // Handled by app.js after simulation starts (originIso check lives there)
-  const stage = infectionStage(currentSnapshot, iso);
-  return STAGE_STYLE[stage];
+function toggleHeatmap(on) {
+  showHeatmap = on;
+  if (!heatLayer) return;
+  if (on) heatLayer.addTo(map); else try { map.removeLayer(heatLayer); } catch (_) {}
+  const b = document.getElementById('heatmap-toggle');
+  if (b) b.classList.toggle('active', on);
 }
 
-// ── Per-feature event wiring ──────────────────────────
-function onEachFeature(feature, layer) {
-  const info = ISO_NUM_TO_INFO[feature.id] || {};
-  const name = info.name || `Unknown region (${feature.id})`;
+// ── Country hover ─────────────────────────────────────
+function wireCountryEvents(feature, layer) {
+  const info = ISO_NUM_TO_INFO[Number(feature.id)] || {};
+  const name = info.name || 'Unknown territory';
   const iso  = info.iso  || '';
-
-  // Store reference for fast style updates
   if (iso) countryLayers[iso] = layer;
 
-  layer.on('mouseover', function(e) {
-    showTooltip(e.originalEvent, name, iso);
-    this.setStyle({ weight: 1.5, fillOpacity: Math.min((this.options.fillOpacity || 0.8) + 0.1, 1) });
-  });
-  layer.on('mousemove', function(e) {
-    moveTooltip(e.originalEvent);
-  });
-  layer.on('mouseout', function() {
-    hideTooltip();
-    geoLayer.resetStyle(this);
-    // Reapply correct style
-    this.setStyle(featureStyle(feature));
-  });
-  layer.on('click', function() {
-    const country = COUNTRY_BY_ISO[iso];
-    if (country) selectOriginCountry(country);
+  layer.on({
+    mouseover: e => {
+      // Russia's polygon covers the entire top of the Mercator map above ~74°N.
+      // Suppress tooltip there — no city is that far north.
+      if (e.latlng && e.latlng.lat > 74) return;
+      layer.setStyle(showDensity ? densityStyle(iso) : HOVER_STYLE);
+      showTip(e.originalEvent, name, iso);
+    },
+    mousemove: e => { if (!(e.latlng && e.latlng.lat > 74)) moveTip(e.originalEvent); },
+    mouseout:  () => { hideTip(); layer.setStyle(showDensity ? densityStyle(iso) : BASE_STYLE); },
   });
 }
 
-// ── Snapshot apply: update all country colours ────────
-function applySnapshot(day, originIso) {
-  currentSnapshot = window._snapshots ? window._snapshots[day] : null;
-  if (!currentSnapshot || !geoLayer) return;
-
-  geoLayer.eachLayer(layer => {
-    if (!layer.feature) return;
-    const info  = ISO_NUM_TO_INFO[layer.feature.id] || {};
-    const iso   = info.iso || '';
-    if (!iso) return;
-
-    let style;
-    if (showDensity) {
-      const c = COUNTRY_BY_ISO[iso];
-      style = densityStyle(c ? c.density : undefined);
-    } else if (iso === originIso) {
-      style = STAGE_STYLE.origin;
-    } else {
-      const stage = infectionStage(currentSnapshot, iso);
-      style = STAGE_STYLE[stage];
-    }
-    layer.setStyle(style);
-  });
-
-  drawDots(currentSnapshot, day);
+// ── Density overlay ───────────────────────────────────
+function densityStyle(iso) {
+  const pop = CITIES.filter(c => c.iso === iso).reduce((s, c) => s + c.pop, 0);
+  const fill = pop>100?'#8b0000':pop>40?'#b35000':pop>15?'#886600':pop>5?'#445500':pop>1?'#1a4466':'#0a1830';
+  return { fillColor:fill, fillOpacity:0.55, color:'transparent', weight:0 };
 }
 
-// ── Toggle density overlay ────────────────────────────
 function toggleDensity(on) {
   showDensity = on;
+  const b   = document.getElementById('density-toggle');
+  if (b) b.classList.toggle('active', on);
 
-  const btn = document.getElementById('density-toggle');
-  btn.classList.toggle('active', on);
+  const infEl = document.getElementById('infection-legend');
+  const denEl = document.getElementById('density-legend');
+  const titEl = document.getElementById('legend-title');
+  if (infEl) infEl.style.display = on ? 'none' : '';
+  if (denEl) denEl.style.display = on ? ''     : 'none';
+  if (titEl) titEl.textContent   = on ? 'POPULATION DENSITY' : 'EPIDEMIC PHASE';
 
-  document.getElementById('infection-legend').style.display = on ? 'none' : '';
-  document.getElementById('density-legend').style.display   = on ? ''     : 'none';
-  document.getElementById('legend-title').textContent       = on ? 'POPULATION DENSITY' : 'INFECTION STATUS';
-
-  // Trigger a full redraw
-  if (geoLayer) {
-    geoLayer.eachLayer(layer => {
-      if (layer.feature) layer.setStyle(featureStyle(layer.feature));
-    });
-  }
-  // If simulation is running, reapply snapshot colours on top
-  if (currentSnapshot && window._simParams) {
-    applySnapshot(currentSnapshot.day, window._simParams.originIso);
-  }
+  if (geoLayer) geoLayer.eachLayer(l => {
+    if (!l.feature) return;
+    const iso = (ISO_NUM_TO_INFO[Number(l.feature.id)] || {}).iso || '';
+    l.setStyle(on && iso ? densityStyle(iso) : BASE_STYLE);
+  });
 }
 
-// ── Canvas dot overlay ────────────────────────────────
-const MAX_DOTS = 150;
-const DOT_R    = 3;
+// ── Apply snapshot ────────────────────────────────────
+function applySnapshot(day, _) {
+  currentSnapshot = (window._snapshots && window._snapshots[day]) || null;
+  // circles are drawn by the animation loop; just update the snapshot reference
+}
 
+// ── Origin marker ─────────────────────────────────────
+function placeOriginMarker(lat, lng) {
+  if (originMarker) try { map.removeLayer(originMarker); } catch (_) {}
+  if (originRing)   try { map.removeLayer(originRing);   } catch (_) {}
+
+  originMarker = L.circleMarker([lat, lng], {
+    radius: 7, weight: 2.5, color: '#ff3b30',
+    fillColor: '#ff6050', fillOpacity: 1, interactive: false,
+  }).addTo(map);
+
+  // Animated expanding ring (CSS handles the animation)
+  originRing = L.circleMarker([lat, lng], {
+    radius: 18, weight: 2, color: '#ff3b30',
+    fillOpacity: 0, className: 'origin-ring', interactive: false,
+  }).addTo(map);
+}
+
+// ── Canvas management ─────────────────────────────────
 function createDotCanvas() {
   dotCanvas = document.createElement('canvas');
   dotCanvas.id = 'dot-canvas';
+  dotCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:450;';
   document.getElementById('map-wrap').appendChild(dotCanvas);
   dotCtx = dotCanvas.getContext('2d');
   syncCanvas();
@@ -229,103 +250,173 @@ function createDotCanvas() {
 
 function syncCanvas() {
   const wrap = document.getElementById('map-wrap');
-  dotCanvas.width  = wrap.offsetWidth;
-  dotCanvas.height = wrap.offsetHeight;
-  dotCanvas.style.width  = wrap.offsetWidth  + 'px';
-  dotCanvas.style.height = wrap.offsetHeight + 'px';
+  if (!wrap || !dotCanvas) return;
+  const w = wrap.offsetWidth, h = wrap.offsetHeight;
+  dotCanvas.width = w; dotCanvas.height = h;
+  dotCanvas.style.width = w + 'px'; dotCanvas.style.height = h + 'px';
 }
 
-function drawDots(snap, day) {
-  if (!dotCtx || !map) return;
-  dotCtx.clearRect(0, 0, dotCanvas.width, dotCanvas.height);
+// ── Draw epidemic rings ───────────────────────────────
+//
+//  Scientific encoding:
+//    Ring RADIUS    — log₁₀(active cases) · range 5–22px
+//    Ring COLOUR    — epidemic phase (amber→orange→red→dark-red)
+//    Ring THICKNESS — CFR relative to cases (thick = high death rate)
+//    Expanding PULSE— emitted when R > 1 (growing outbreak wave front)
+//    White DOT      — proportional to cumulative deaths (center)
+//
+//  Ring visualization keeps the satellite map visible through the marker;
+//  overlapping rings form a lace-like network pattern rather than solid blobs.
+//
+function drawCircles(snap) {
+  if (!dotCtx || !map || !snap || !snap.cityData) return;
 
-  COUNTRIES.forEach(c => {
-    const cs = snap.countries[c.iso];
-    if (!cs || cs.D < 100) return;
+  const W = dotCanvas.width, H = dotCanvas.height;
+  dotCtx.clearRect(0, 0, W, H);
 
-    const count = Math.min(Math.floor(cs.D / 100), MAX_DOTS);
-    const rng   = seededRng(c.iso);
+  const day      = snap.day;
+  const prevSnap = window._snapshots && day > 0 ? window._snapshots[day - 1] : null;
 
-    for (let i = 0; i < count; i++) {
-      const center = c.centers[i % c.centers.length];
-      const jLat   = (rng() - 0.5) * 2.5;
-      const jLng   = (rng() - 0.5) * 2.5;
-      const birthD = Math.max(0, day - Math.floor(rng() * 20));
-      const alpha  = Math.min(1, (day - birthD) / 5) * 0.88;
+  // Render largest outbreaks first (background), so smaller emerging ones
+  // appear on top and remain visible
+  const order = [];
+  for (let i = 0; i < CITIES.length; i++) {
+    const cd = snap.cityData[i];
+    if (cd && cd.active >= 10) order.push(i);
+  }
+  order.sort((a, b) => (snap.cityData[b].active || 0) - (snap.cityData[a].active || 0));
 
-      const pt = map.latLngToContainerPoint([center[0] + jLat, center[1] + jLng]);
+  for (const i of order) {
+    const cd     = snap.cityData[i];
+    const city   = CITIES[i];
+    const prevCd = prevSnap ? prevSnap.cityData[i] : null;
 
-      // Outer glow
+    let pt;
+    try { pt = map.latLngToContainerPoint([city.lat, city.lng]); }
+    catch (_) { continue; }
+
+    if (pt.x < -35 || pt.x > W + 35 || pt.y < -35 || pt.y > H + 35) continue;
+
+    const phase    = getEpidemicPhase(cd, prevCd);
+    if (phase === 'unaffected') continue;
+    const [r, g, b] = getPhaseColor(phase);
+    const growing  = growsToday(cd, prevCd);
+
+    // Ring radius: logarithmic — 10 cases→5px, 10k→14px, 1M→22px
+    const ringR = Math.max(5, Math.min(22, Math.log10(cd.active + 1) * 4.0));
+
+    // Ring line-width encodes CFR: thicker = more deaths per infection
+    const cfrFrac = cd.D / Math.max(1, cd.D + cd.active);
+    const lineW   = Math.max(1.5, Math.min(5.5, cfrFrac * 50 + 1.5));
+
+    // ── Pulse rings (wave-front indicator) ────────────
+    if (growing) {
+      const offset = (i * 23) % 80;
+      const t      = ((animFrame + offset) % 80) / 80;   // 0→1
+      // Triangle fade: bright at t=0.3, fade out by t=1
+      const alpha  = Math.max(0, 0.6 - Math.abs(t - 0.3) * 1.2);
+      const pulseR = ringR + 5 + t * 15;
+
       dotCtx.beginPath();
-      dotCtx.arc(pt.x, pt.y, DOT_R + 2.5, 0, Math.PI * 2);
-      dotCtx.fillStyle = `rgba(255,80,40,${alpha * 0.22})`;
-      dotCtx.fill();
+      dotCtx.arc(pt.x, pt.y, pulseR, 0, Math.PI * 2);
+      dotCtx.strokeStyle = `rgba(${r},${g},${b},${(alpha * 0.75).toFixed(3)})`;
+      dotCtx.lineWidth   = 1.2;
+      dotCtx.stroke();
+    }
 
-      // Core dot
+    // ── Soft glow halo (very subtle — keeps map readable) ──
+    const glowR = ringR * 2.0;
+    const grd   = dotCtx.createRadialGradient(pt.x, pt.y, ringR * 0.6, pt.x, pt.y, glowR);
+    grd.addColorStop(0, `rgba(${r},${g},${b},0.14)`);
+    grd.addColorStop(1, `rgba(${r},${g},${b},0.00)`);
+    dotCtx.beginPath();
+    dotCtx.arc(pt.x, pt.y, glowR, 0, Math.PI * 2);
+    dotCtx.fillStyle = grd;
+    dotCtx.fill();
+
+    // ── Main ring ─────────────────────────────────────
+    dotCtx.beginPath();
+    dotCtx.arc(pt.x, pt.y, ringR, 0, Math.PI * 2);
+    dotCtx.strokeStyle = `rgba(${r},${g},${b},0.92)`;
+    dotCtx.lineWidth   = lineW;
+    dotCtx.stroke();
+
+    // ── Death core: white dot at centre ───────────────
+    // Size encodes accumulated deaths (log scale); opacity encodes CFR fraction.
+    if (cd.D > 50) {
+      const dR    = Math.max(1.5, Math.min(ringR * 0.40, Math.log10(cd.D) * 0.85));
+      const alpha = Math.min(0.95, 0.35 + cfrFrac * 9);
       dotCtx.beginPath();
-      dotCtx.arc(pt.x, pt.y, DOT_R, 0, Math.PI * 2);
-      dotCtx.fillStyle = `rgba(255,55,35,${alpha})`;
+      dotCtx.arc(pt.x, pt.y, dR, 0, Math.PI * 2);
+      dotCtx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
       dotCtx.fill();
     }
-  });
+  }
 }
 
-function seededRng(seed) {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (Math.imul(31, h) + seed.charCodeAt(i)) | 0;
-  return () => {
-    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
-    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
-    h ^= (h >>> 16);
-    return (h >>> 0) / 0xffffffff;
-  };
-}
-
-// ── Tooltip helpers ───────────────────────────────────
-function showTooltip(event, name, iso) {
+// ── Tooltip ───────────────────────────────────────────
+function showTip(event, name, iso) {
   const tip = document.getElementById('tooltip');
-  let html  = `<div class="tt-name">${name}</div>`;
+  if (!tip) return;
+
+  let html = `<div class="tt-name">${name}</div>`;
 
   if (currentSnapshot && iso && currentSnapshot.countries[iso]) {
-    const cs = currentSnapshot.countries[iso];
-    html += `<div class="tt-row">ACTIVE <span class="tt-val">${fmtNum(Math.round(cs.I + cs.E))}</span></div>`;
-    html += `<div class="tt-row">DEATHS <span class="tt-val">${fmtNum(Math.round(cs.D))}</span></div>`;
-    const c = COUNTRY_BY_ISO[iso];
-    if (c) html += `<div class="tt-row">DENSITY <span class="tt-val">${c.density} /km²</span></div>`;
-  } else {
-    const c = COUNTRY_BY_ISO[iso];
-    if (c) {
-      html += `<div class="tt-row">POP <span class="tt-val">${c.pop}M</span></div>`;
-      html += `<div class="tt-row">DENSITY <span class="tt-val">${c.density} /km²</span></div>`;
-    }
-    html += `<div class="tt-row" style="color:var(--text-muted)">CLICK TO SELECT AS ORIGIN</div>`;
+    const c   = currentSnapshot.countries[iso];
+    const cfr = c.N > 0 ? (c.D / Math.max(1, c.D + c.active) * 100) : 0;
+    html += `<div class="tt-row">ACTIVE  <span class="tt-val">${_fmt(Math.round(c.active))}</span></div>`;
+    html += `<div class="tt-row">DEATHS  <span class="tt-val">${_fmt(Math.round(c.D))}</span></div>`;
+    html += `<div class="tt-row">CFR     <span class="tt-val">${cfr.toFixed(2)}%</span></div>`;
+  }
+
+  const cities = CITIES.filter(c => c.iso === iso);
+  if (cities.length) {
+    const tier    = cities[0].tier;
+    const tierLbl = (TIER_PARAMS[tier] || {}).label || '—';
+    html += `<div class="tt-row">CITIES     <span class="tt-val">${cities.length}</span></div>`;
+    html += `<div class="tt-row">HEALTHCARE <span class="tt-val tier-${tier}">${tierLbl}</span></div>`;
+  } else if (!currentSnapshot) {
+    html += `<div class="tt-row" style="color:var(--cyan);margin-top:4px">CLICK TO SET OUTBREAK ORIGIN</div>`;
   }
 
   tip.innerHTML = html;
   tip.style.display = 'block';
-  moveTooltip(event);
+  moveTip(event);
 }
 
-function moveTooltip(event) {
+function moveTip(event) {
   const tip  = document.getElementById('tooltip');
   const wrap = document.getElementById('map-wrap');
-  const rect = wrap.getBoundingClientRect();
-  let x = event.clientX - rect.left + 14;
-  let y = event.clientY - rect.top  - 10;
-  // Keep within bounds
-  if (x + 160 > wrap.offsetWidth)  x = event.clientX - rect.left - 165;
-  if (y + 80  > wrap.offsetHeight) y = event.clientY - rect.top  - 90;
+  if (!tip || !wrap) return;
+  const r = wrap.getBoundingClientRect();
+  let x = event.clientX - r.left + 16;
+  let y = event.clientY - r.top  - 12;
+  if (x + 220 > wrap.offsetWidth)  x = event.clientX - r.left - 230;
+  if (y + 120 > wrap.offsetHeight) y = event.clientY - r.top  - 130;
   tip.style.left = x + 'px';
   tip.style.top  = y + 'px';
 }
 
-function hideTooltip() {
-  document.getElementById('tooltip').style.display = 'none';
+function hideTip() {
+  const tip = document.getElementById('tooltip');
+  if (tip) tip.style.display = 'none';
 }
 
-// Formatting helper (used in tooltip; full version in app.js)
-function fmtNum(n) {
+// Private number formatter
+function _fmt(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return n.toLocaleString();
+}
+
+function showMapError(msg) {
+  const wrap = document.getElementById('map-wrap');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);'
+    + 'background:rgba(8,14,30,0.95);border:1px solid #ff3b30;border-radius:6px;'
+    + 'padding:14px 20px;font-family:monospace;font-size:11px;color:#ff3b30;z-index:600;';
+  div.textContent = '⚠ ' + msg;
+  wrap.appendChild(div);
 }
