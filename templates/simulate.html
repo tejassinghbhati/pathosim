@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PATHOSIM — Simulation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/css/simulate.css">
+</head>
+<body>
+
+<!-- ════════════════════════════════════════
+     HEADER
+════════════════════════════════════════ -->
+<header id="sim-header">
+
+  <div class="sh-left">
+    <a href="/" class="sh-back">←</a>
+    <span class="sh-brand">PATHOSIM</span>
+    <span class="sh-version">v3.0</span>
+  </div>
+
+  <div class="sh-center">
+    <div id="live-badge">
+      <span class="lb-dot"></span>
+      <span id="lb-text">AWAITING CONFIGURATION</span>
+    </div>
+    <div id="sim-phase">SEIR Epidemiological Model · ML-Enhanced</div>
+  </div>
+
+  <div class="sh-right">
+    <!-- Delta metric chips -->
+    <div class="delta-chip">
+      <span class="dc-label">Deaths</span>
+      <span class="dc-val red"  id="stat-deaths">—</span>
+      <span class="dc-delta"    id="stat-deaths-d"></span>
+    </div>
+    <div class="delta-chip">
+      <span class="dc-label">Active</span>
+      <span class="dc-val cyan" id="stat-active">—</span>
+      <span class="dc-delta"    id="stat-active-d"></span>
+    </div>
+    <div class="delta-chip">
+      <span class="dc-label">Nations</span>
+      <span class="dc-val blue" id="stat-countries">—</span>
+      <span class="dc-delta"    id="stat-nations-d"></span>
+    </div>
+    <div class="delta-chip">
+      <span class="dc-label">Eff. R</span>
+      <span class="dc-val"      id="stat-re">—</span>
+      <span class="dc-delta"    id="stat-re-d"></span>
+    </div>
+
+    <div class="sh-divider"></div>
+
+    <a href="/analytics" class="hdr-btn hidden" id="btn-analytics">
+      ▦ Analytics
+    </a>
+    <button class="hdr-btn" id="btn-toggle-right">
+      ◫ Monitor
+    </button>
+  </div>
+
+</header>
+
+
+<!-- ════════════════════════════════════════
+     MAIN AREA
+════════════════════════════════════════ -->
+<div id="main-area">
+
+  <!-- ── LEFT SIDEBAR: Configuration ── -->
+  <aside id="sidebar">
+    <div id="sidebar-inner">
+
+      <button id="sidebar-toggle" title="Collapse">‹</button>
+
+      <!-- 01 Origin -->
+      <section class="sb-section">
+        <div class="sb-label"><span class="sb-num">01</span> Origin City</div>
+        <div id="origin-card" class="origin-empty">
+          <div class="origin-hint-icon">⊕</div>
+          <div class="origin-hint-text">Click anywhere on the map to select the outbreak origin</div>
+        </div>
+      </section>
+
+      <!-- ML section -->
+      <section class="sb-section" id="ml-section">
+        <div class="sb-label"><span class="sb-num">ML</span> Disease Model</div>
+        <div class="ml-info">
+          <div class="ml-model-label">GradientBoosting · scikit-learn · 200 estimators</div>
+          <div class="ml-features">
+            <span class="ml-feat">Hospital beds/1k (WHO)</span>
+            <span class="ml-feat">Pop. density (UN)</span>
+            <span class="ml-feat">HAQ index (GBD)</span>
+            <span class="ml-feat">Air connectivity</span>
+          </div>
+          <div class="ml-output">Predicts unique β and CFR multipliers per city from learned feature interactions</div>
+          <div id="ml-status-badge" class="ml-badge">● Awaiting run</div>
+        </div>
+      </section>
+
+      <!-- 02 Pathogen -->
+      <section class="sb-section">
+        <div class="sb-label"><span class="sb-num">02</span> Pathogen Parameters</div>
+
+        <div class="param-row">
+          <div class="param-info">
+            <span class="param-name">R₀</span>
+            <span class="param-desc">Basic reproduction number</span>
+          </div>
+          <span class="param-val" id="r0-val">2.5</span>
+        </div>
+        <input type="range" class="slider" id="r0" min="0.5" max="6.0" step="0.1" value="2.5">
+        <div class="slider-range"><span>0.5</span><span>6.0</span></div>
+
+        <div class="param-row">
+          <div class="param-info">
+            <span class="param-name">Incubation</span>
+            <span class="param-desc">Days before infectious</span>
+          </div>
+          <span class="param-val" id="incub-val">5</span>
+        </div>
+        <input type="range" class="slider" id="incub" min="1" max="21" step="1" value="5">
+        <div class="slider-range"><span>1d</span><span>21d</span></div>
+
+        <div class="param-row">
+          <div class="param-info">
+            <span class="param-name">Case Fatality</span>
+            <span class="param-desc">Base CFR (%)</span>
+          </div>
+          <span class="param-val" id="mort-val">1.0</span>
+        </div>
+        <input type="range" class="slider" id="mort" min="0.1" max="10" step="0.1" value="1.0">
+        <div class="slider-range"><span>0.1%</span><span>10%</span></div>
+
+        <div class="param-row">
+          <div class="param-info">
+            <span class="param-name">Vaccine</span>
+            <span class="param-desc">Months until available</span>
+          </div>
+          <span class="param-val" id="vacc-val">18</span>
+        </div>
+        <input type="range" class="slider" id="vacc" min="6" max="36" step="1" value="18">
+        <div class="slider-range"><span>6 mo</span><span>36 mo</span></div>
+      </section>
+
+      <!-- 03 Healthcare tiers -->
+      <section class="sb-section">
+        <div class="sb-label"><span class="sb-num">03</span> Healthcare Tiers</div>
+        <div class="tier-info-list">
+          <div class="tier-info-row"><span class="tier-badge tier-1">Advanced</span><span>β ×0.75 · CFR ×0.50</span></div>
+          <div class="tier-info-row"><span class="tier-badge tier-2">Moderate</span><span>β ×0.95 · CFR ×0.85</span></div>
+          <div class="tier-info-row"><span class="tier-badge tier-3">Limited</span> <span>β ×1.20 · CFR ×1.50</span></div>
+          <div class="tier-info-row"><span class="tier-badge tier-4">Critical</span><span>β ×1.50 · CFR ×2.60</span></div>
+        </div>
+      </section>
+
+      <!-- 04 Speed -->
+      <section class="sb-section">
+        <div class="sb-label"><span class="sb-num">04</span> Playback Speed</div>
+        <div class="speed-group">
+          <button class="speed-btn" data-speed="slow">Slow</button>
+          <button class="speed-btn active" data-speed="normal">Normal</button>
+          <button class="speed-btn" data-speed="fast">Fast</button>
+        </div>
+      </section>
+
+      <!-- 05 API -->
+      <section class="sb-section">
+        <div class="sb-label"><span class="sb-num">05</span> AI Headlines <span style="font-size:8px;opacity:0.5;margin-left:4px;">optional</span></div>
+        <input type="text" id="api-key" class="text-input"
+               placeholder="sk-ant-api… (or set ANTHROPIC_API_KEY in .env)"
+               autocomplete="off" spellcheck="false">
+        <p class="input-note">Sent to local Flask server only — never leaves your machine.</p>
+      </section>
+
+      <!-- Run button -->
+      <div class="sb-run-area">
+        <button id="run-btn" disabled>Select an origin city first</button>
+      </div>
+
+    </div>
+  </aside>
+
+
+  <!-- ── MAP AREA ── -->
+  <div id="map-wrap">
+
+    <!-- Tooltip -->
+    <div id="tooltip"></div>
+
+    <!-- Floating stat bar -->
+    <div id="stat-chips" class="hidden">
+      <div class="chip">
+        <span class="chip-lbl">CFR</span>
+        <span class="chip-val purple" id="stat-cfr">—</span>
+      </div>
+      <div class="chip">
+        <span class="chip-lbl">Infected</span>
+        <span class="chip-val amber" id="stat-cases">—</span>
+      </div>
+    </div>
+
+    <!-- Layer controls (floating, bottom-left) -->
+    <div id="map-layer-ctrl">
+      <button class="mlc-btn"        data-layer="dark"      title="Dark tiles">●</button>
+      <button class="mlc-btn active" data-layer="satellite" title="Satellite">◉</button>
+      <button class="mlc-btn"        data-layer="terrain"   title="Terrain">◈</button>
+      <div class="mlc-sep"></div>
+      <button class="mlc-btn"        id="heatmap-toggle"    title="Population heatmap">⬡</button>
+      <button class="mlc-btn"        id="density-toggle"    title="Density overlay">▦</button>
+    </div>
+
+    <!-- Legend (bottom-right, above zoom) -->
+    <div id="map-legend">
+      <div class="leg-title" id="legend-title">EPIDEMIC PHASE</div>
+      <div id="infection-legend">
+        <div class="leg-row"><div class="leg-ring" style="border-color:#e8920a"></div> Early (R&gt;1, low burden)</div>
+        <div class="leg-row"><div class="leg-ring" style="border-color:#d96020"></div> Growing (spreading)</div>
+        <div class="leg-row"><div class="leg-ring" style="border-color:#d42e1e"></div> Peak (&gt;2% infected)</div>
+        <div class="leg-row"><div class="leg-ring" style="border-color:#941515;border-width:3px"></div> Overwhelmed (&gt;5%)</div>
+        <div class="leg-sep-top"></div>
+        <div class="leg-row"><strong>Ring size</strong> = active infections</div>
+        <div class="leg-row"><strong>Ring width</strong> = CFR</div>
+        <div class="leg-row"><strong>White dot</strong> = deaths</div>
+        <div class="leg-row"><strong>Pulse</strong> = R &gt; 1 (growing)</div>
+      </div>
+      <div id="density-legend">
+        <div class="leg-row"><div class="leg-swatch" style="background:#0a1830"></div>&lt;1M population</div>
+        <div class="leg-row"><div class="leg-swatch" style="background:#1a4466"></div>1–5M</div>
+        <div class="leg-row"><div class="leg-swatch" style="background:#445500"></div>5–15M</div>
+        <div class="leg-row"><div class="leg-swatch" style="background:#886600"></div>15–40M</div>
+        <div class="leg-row"><div class="leg-swatch" style="background:#8b0000"></div>100M+</div>
+      </div>
+    </div>
+
+    <!-- Idle hint -->
+    <div id="map-idle-hint">
+      <div class="mih-inner">
+        <div class="mih-icon">⊕</div>
+        <div class="mih-text">Click anywhere to select outbreak origin</div>
+        <div class="mih-sub">Zoom in to select specific cities</div>
+      </div>
+    </div>
+
+  </div><!-- /map-wrap -->
+
+
+  <!-- ── RIGHT PANEL: ML Monitor + News ── -->
+  <div id="right-panel">
+
+    <div class="rp-tabs">
+      <button class="rp-tab active" data-pane="monitor">⚙ Monitor</button>
+      <button class="rp-tab"        data-pane="news">◉ Intel Feed</button>
+    </div>
+
+    <!-- Monitor pane -->
+    <div class="rp-body">
+
+      <div class="rp-pane active" id="pane-monitor">
+
+        <div class="rp-section">
+          <div class="rp-section-label">ML Model Status</div>
+          <div class="ml-status-box" id="ml-status-box">
+            <div class="msb-row"><span class="msb-key">Algorithm</span><span class="msb-val purple">GradientBoosting</span></div>
+            <div class="msb-row"><span class="msb-key">Estimators</span><span class="msb-val">200</span></div>
+            <div class="msb-row"><span class="msb-key">Features</span><span class="msb-val">4 inputs</span></div>
+            <div class="msb-row"><span class="msb-key">Status</span><span class="msb-val" id="ml-rp-status">Awaiting run</span></div>
+          </div>
+        </div>
+
+        <div class="rp-section">
+          <div class="rp-section-label">Feature Importance — Transmission (β)</div>
+          <div id="fi-beta-bars">
+            <div class="fi-bar-row"><div class="fi-bar-label">Loading…</div></div>
+          </div>
+        </div>
+
+        <div class="rp-section">
+          <div class="rp-section-label">Feature Importance — Fatality (CFR)</div>
+          <div id="fi-cfr-bars">
+            <div class="fi-bar-row"><div class="fi-bar-label">Loading…</div></div>
+          </div>
+        </div>
+
+        <div class="rp-section">
+          <div class="rp-section-label">Live Hotspots</div>
+          <div id="hotspot-list">
+            <div style="font-family:var(--mono);font-size:9px;color:var(--text-dim);padding:8px 0">
+              Run simulation to see live hotspot tracking.
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /pane-monitor -->
+
+      <!-- News pane -->
+      <div class="rp-pane" id="pane-news">
+
+        <!-- Feed header -->
+        <div class="news-feed-header">
+          <span class="news-feed-title">Intelligence Feed</span>
+          <span id="news-count" class="news-feed-count">0 REPORTS</span>
+        </div>
+
+        <!-- Severity filter bar -->
+        <div id="news-filter-bar" class="news-filter-bar">
+          <button class="nfb-btn active" data-filter="all">All</button>
+          <button class="nfb-btn" data-filter="critical">Critical</button>
+          <button class="nfb-btn" data-filter="warning">Warning</button>
+          <button class="nfb-btn" data-filter="positive">Positive</button>
+        </div>
+
+        <div id="news-list">
+          <div class="news-placeholder">Monitoring situation — reports will appear as milestones are reached.</div>
+        </div>
+
+      </div>
+
+    </div><!-- /rp-body -->
+  </div><!-- /right-panel -->
+
+</div><!-- /main-area -->
+
+
+<!-- ════════════════════════════════════════
+     TIMELINE
+════════════════════════════════════════ -->
+<div id="timeline-bar">
+
+  <button id="play-btn" disabled>▶</button>
+
+  <div class="tl-track">
+    <div class="tl-top-row">
+      <span class="tl-phase-label" id="tl-phase">——</span>
+      <span class="tl-date-label"  id="tl-date">——</span>
+    </div>
+    <input type="range" id="scrubber" min="0" max="729" value="0" step="1" disabled>
+    <div class="tl-ticks">
+      <span>Jun 2026</span><span>Dec 2026</span>
+      <span>Jun 2027</span><span>Dec 2027</span><span>Jun 2028</span>
+    </div>
+  </div>
+
+  <div class="tl-right">
+    <div id="tl-day" style="font-family:var(--mono);font-size:11px;color:var(--text)">Day — / 730</div>
+    <div id="tl-cfr" style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:2px"></div>
+  </div>
+
+  <!-- Milestone dots overlay -->
+  <div id="tl-milestones"></div>
+
+</div>
+
+
+<!-- Computing overlay -->
+<div id="computing-overlay">
+  <div class="co-box">
+    <div class="co-title">Initialising Simulation</div>
+    <div class="co-bar-wrap"><div class="co-bar"></div></div>
+    <div class="co-step" id="co-step">Querying ML model for city parameters…</div>
+  </div>
+</div>
+
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js"></script>
+<script src="/static/js/data.js"></script>
+<script src="/static/js/cities.js"></script>
+<script src="/static/js/simulation.js"></script>
+<script src="/static/js/renderer.js"></script>
+<script src="/static/js/news.js"></script>
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>
