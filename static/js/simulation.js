@@ -1,119 +1,131 @@
 // ═══════════════════════════════════════════════════════
-//  simulation.js — SEIR engine, pre-computes all 730 days
-//  Depends on: data.js (COUNTRIES)
+//  simulation.js — City-node SEIR engine
+//  Depends on: cities.js (CITIES, TIER_PARAMS, cityDist)
 // ═══════════════════════════════════════════════════════
 
-const DAYS = 730;
-const SEED_EXPOSED = 1000;
-const HUB_ISOS = new Set(['US','GB','CN','AE','DE','SG','JP','FR','BR','NL','KR','AU','CA','TR']);
+const DAYS       = 730;
+const SEED_CASES = 500;   // initial exposed in origin city
 
 function computeAllSnapshots(params) {
-  const { originIso, r0, incubDays, mortalityRate, vaccineMonths } = params;
+  const { originCityIdx, r0, incubDays, mortalityRate, vaccineMonths } = params;
 
-  // Initialise per-country SEIR state
-  const state = {};
-  COUNTRIES.forEach(c => {
-    const N = c.pop * 1e6;
-    state[c.iso] = { S: N, E: 0, I: 0, R: 0, D: 0, N };
+  // ── Initialise per-city SEIR state ───────────────────
+  const states = CITIES.map(c => {
+    const N = c.pop * 1_000_000;
+    return { S: N, E: 0, I: 0, R: 0, D: 0, N };
   });
 
-  // Seed the origin country
-  const s0 = state[originIso];
-  if (s0) {
-    const seed = Math.min(SEED_EXPOSED, s0.S);
-    s0.S -= seed;
-    s0.E  = seed;
-  }
+  const seed = Math.min(SEED_CASES, states[originCityIdx].S);
+  states[originCityIdx].S -= seed;
+  states[originCityIdx].E  = seed;
 
-  const gamma       = 1 / 7;           // ~7-day infectious period
-  const sigma       = 1 / incubDays;   // incubation rate
-  const vaccineDay  = vaccineMonths * 30;
-  const snapshots   = [];
+  const gamma      = 1 / 7;            // infectious period ~7 days
+  const sigma      = 1 / incubDays;
+  const vaccineDay = vaccineMonths * 30;
+
+  const snapshots = [];
 
   for (let day = 0; day < DAYS; day++) {
     const vaccineActive = day >= vaccineDay;
 
-    // ── Inter-country spread ──────────────────────────
-    const newExp = {};
-    COUNTRIES.forEach(c => { newExp[c.iso] = 0; });
+    // ── Cross-city spread ────────────────────────────
+    const newExp = new Float64Array(CITIES.length);
 
-    COUNTRIES.forEach(src => {
-      const ss = state[src.iso];
-      if (ss.I < 1) return;
+    for (let si = 0; si < CITIES.length; si++) {
+      const ss = states[si];
+      if (ss.I < 0.5) continue;
       const infecFrac = ss.I / ss.N;
+      const src       = CITIES[si];
 
-      COUNTRIES.forEach(dst => {
-        if (dst.iso === src.iso) return;
-        const dd = state[dst.iso];
-        if (dd.S < 1) return;
-        const dist  = haversine(src.lat, src.lng, dst.lat, dst.lng);
-        const w     = travelWeight(src, dst, dist);
-        const delta = infecFrac * w * 0.015 * dd.S;
-        if (delta > 0.01) newExp[dst.iso] += delta;
-      });
-    });
+      for (let di = 0; di < CITIES.length; di++) {
+        if (si === di) continue;
+        const dd = states[di];
+        if (dd.S < 1) continue;
 
-    // ── Within-country SEIR + vaccine ────────────────
-    COUNTRIES.forEach(c => {
-      const s    = state[c.iso];
-      const beta = r0 * gamma;
-      const foi  = beta * (s.I / s.N);
+        const dst  = CITIES[di];
+        const dist = cityDist(src.lat, src.lng, dst.lat, dst.lng);
+        const w    = travelWeight(src, dst, dist);
+        const delta = infecFrac * w * 0.008 * dd.S;
+        if (delta > 0.01) newExp[di] += delta;
+      }
+    }
 
+    // ── Within-city SEIR (ML-predicted healthcare params) ─
+    for (let i = 0; i < CITIES.length; i++) {
+      const s  = states[i];
+      // Use ML-predicted per-city multipliers if available;
+      // fall back to tier lookup so the sim works without ML
+      const ml   = (params.cityMLParams && params.cityMLParams[i]) || null;
+      const tier = TIER_PARAMS[CITIES[i].tier] || TIER_PARAMS[2];
+      const betaMult = ml ? ml.beta_mult : tier.betaMult;
+      const cfrMult  = ml ? ml.cfr_mult  : tier.cfrMult;
+      const beta = r0 * gamma * betaMult;
+      const cfr  = mortalityRate * cfrMult;
+
+      const foi = beta * (s.I / s.N);
       let dS = -foi * s.S;
-      let dE = foi * s.S + newExp[c.iso] - sigma * s.E;
+      let dE = foi * s.S + newExp[i] - sigma * s.E;
       let dI = sigma * s.E - gamma * s.I;
       let dR = gamma * s.I;
 
       if (vaccineActive && s.S > 0) {
-        const v = s.S * 0.02;  // 2% of susceptible vaccinated per day
+        const v = s.S * 0.018;   // ~1.8% of susceptibles vaccinated per day at peak
         dS -= v;
         dR += v;
       }
 
-      const newDeaths = dR * mortalityRate;
-      dR -= newDeaths;
+      const deaths = Math.max(0, dR * cfr);
+      dR -= deaths;
 
-      s.S = Math.max(0, s.S + dS - newExp[c.iso]);
+      // Apply cross-city exposure (subtract from S, add to E via dE above)
+      s.S = Math.max(0, s.S + dS - newExp[i]);
       s.E = Math.max(0, s.E + dE);
       s.I = Math.max(0, s.I + dI);
       s.R = Math.max(0, s.R + dR);
-      s.D += Math.max(0, newDeaths);
-    });
+      s.D += deaths;
+    }
 
-    // ── Snapshot ─────────────────────────────────────
-    const snap = { day, countries: {} };
-    let totalCases = 0, totalDeaths = 0, totalActive = 0, countriesAffected = 0;
+    // ── Build snapshot ───────────────────────────────
+    const snap        = { day, cityData: [], countries: {} };
+    let totalCases    = 0;
+    let totalDeaths   = 0;
+    let totalActive   = 0;
+    const countrySet  = new Set();
+    const countryAgg  = {};   // iso → {active, N, D}
 
-    COUNTRIES.forEach(c => {
-      const s = state[c.iso];
-      snap.countries[c.iso] = { S:s.S, E:s.E, I:s.I, R:s.R, D:s.D, N:s.N };
+    for (let i = 0; i < CITIES.length; i++) {
+      const s    = states[i];
+      const city = CITIES[i];
+
+      // Lightweight per-city snapshot (avoids storing full state for every city/day)
+      snap.cityData.push({ D: s.D, active: s.E + s.I, N: s.N });
+
       totalCases  += s.E + s.I + s.R + s.D;
       totalDeaths += s.D;
-      totalActive += s.I + s.E;
-      if (s.D > 0 || s.I > 0 || s.E > 0) countriesAffected++;
-    });
+      totalActive += s.E + s.I;
 
-    snap.totalCases         = totalCases;
-    snap.totalDeaths        = totalDeaths;
-    snap.totalActive        = totalActive;
-    snap.countriesAffected  = countriesAffected;
+      if (s.D > 0 || s.I > 0 || s.E > 0) countrySet.add(city.iso);
+
+      if (!countryAgg[city.iso]) countryAgg[city.iso] = { active: 0, N: 0, D: 0 };
+      countryAgg[city.iso].active += s.E + s.I;
+      countryAgg[city.iso].N      += s.N;
+      countryAgg[city.iso].D      += s.D;
+    }
+
+    snap.countries         = countryAgg;
+    snap.totalCases        = totalCases;
+    snap.totalDeaths       = totalDeaths;
+    snap.totalActive       = totalActive;
+    snap.countriesAffected = countrySet.size;
     snapshots.push(snap);
   }
 
   return snapshots;
 }
 
-function haversine(lat1, lng1, lat2, lng2) {
-  const R    = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a    = Math.sin(dLat/2)**2
-             + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
+// ── Travel weight between two cities ─────────────────
 function travelWeight(src, dst, dist) {
-  const hubBoost  = (HUB_ISOS.has(src.iso) ? 1 : 0) + (HUB_ISOS.has(dst.iso) ? 1 : 0);
-  const distFactor = Math.exp(-dist / 8000);
-  return (0.2 + 0.4 * distFactor + 0.4 * (hubBoost / 2)) * src.hub * dst.hub;
+  const hubFactor  = (src.hub + dst.hub) / 2;
+  const distFactor = Math.exp(-dist / 5000);   // exponential decay, softer than country model
+  return (0.15 + 0.45 * distFactor + 0.40 * hubFactor);
 }
