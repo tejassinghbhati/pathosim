@@ -227,5 +227,4 @@ const ISO_NUM_TO_INFO = {
   716: {name:"Zimbabwe",                iso:"ZW"},
   51:  {name:"Armenia",                 iso:"AM"},
   702: {name:"Singapore",               iso:"SG"},
-  250: {name:"France",                  iso:"FR"},
 };
