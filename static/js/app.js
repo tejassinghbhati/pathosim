@@ -327,7 +327,7 @@ function saveAnalyticsData() {
 
     // Peak active and total cases across timeseries
     let peakActive = 0, totalCases = 0;
-    for (const snap of ts) {
+    for (const snap of window._snapshots) {
       if (snap.cityData && snap.cityData[i]) {
         const cdSnap = snap.cityData[i];
         peakActive = Math.max(peakActive, cdSnap.active || 0);
