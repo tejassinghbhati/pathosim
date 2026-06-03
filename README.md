@@ -832,6 +832,20 @@ RENDERING:
 
 ## 9. Installation & Deployment
 
+### 🌐 Live Demo
+
+**PATHOSIM is now live and publicly accessible:**
+
+```
+https://pathosim.onrender.com
+```
+
+**Launch now** → Select origin city → Run simulation → Watch 220-city outbreak unfold → Explore analytics
+
+Hosted on Render.com free tier (auto-deploy from GitHub main branch)
+
+---
+
 ### 9.1 Local Development
 
 ```bash
